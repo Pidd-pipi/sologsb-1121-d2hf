@@ -6,7 +6,7 @@ import type { RecheckDiff } from '../types/recheck';
 import { newId } from './id';
 
 export const DB_NAME = 'gbforestplot';
-export const DB_VERSION = 2;
+export const DB_VERSION = 3;
 export const LS_VERSION_KEY = 'gbforestplot:db-version';
 
 class ForestPlotDB extends Dexie {
@@ -46,6 +46,24 @@ class ForestPlotDB extends Dexie {
             if (row.measuredAt === undefined) row.measuredAt = Date.now();
           });
       });
+    // v3：比对表增加 batchId，老比对按「样地 + 两期」回填同一批次号（无样木快照，视为待重新生成）
+    this.version(3)
+      .stores({
+        plots: 'id, plotNo, locality, forestType, surveyRound, locked, createdAt',
+        trees: 'id, plotId, treeNo, species, round, status, measuredAt',
+        regens: 'id, plotId, layer, species, round, heightCm',
+        rechecks: 'id, plotId, baseRound, targetRound, treeNo, generatedAt, batchId',
+      })
+      .upgrade(async (tx) => {
+        await tx
+          .table('rechecks')
+          .toCollection()
+          .modify((row: any) => {
+            if (!row.batchId) {
+              row.batchId = `legacy-${row.plotId}-${row.baseRound}-${row.targetRound}`;
+            }
+          });
+      });
   }
 }
 
@@ -68,8 +86,21 @@ export function readDbVersion(): number {
   }
 }
 
-export async function saveRecheckDiffs(diffs: RecheckDiff[]): Promise<void> {
-  await db.rechecks.bulkPut(diffs);
+/**
+ * 整批保存比对结果：同一「样地 + 上期 + 本期」的旧批次先清除，再写入新批次，
+ * 保证每个期次对只有一份有效比对。
+ */
+export async function saveRecheckBatch(diffs: RecheckDiff[]): Promise<void> {
+  if (diffs.length === 0) return;
+  const first = diffs[0];
+  await db.transaction('rw', db.rechecks, async () => {
+    await db.rechecks
+      .where('plotId')
+      .equals(first.plotId)
+      .and((row) => row.baseRound === first.baseRound && row.targetRound === first.targetRound)
+      .delete();
+    await db.rechecks.bulkPut(diffs);
+  });
 }
 
 export async function loadRecheckDiffs(plotId: string): Promise<RecheckDiff[]> {
