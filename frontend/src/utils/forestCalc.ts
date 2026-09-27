@@ -117,3 +117,20 @@ export function heightClassStats(rows: RegenShrub[]): { label: string; count: nu
   });
   return order.map((label) => ({ label, count: map.get(label) ?? 0 }));
 }
+
+/**
+ * 某一期样木的状态指纹：树号、树种、胸径、树高、树况任一变化（含增删样木）都会改变。
+ * 只覆盖影响复查比对结果的字段，且按单期次计算——无关期次或无关字段的改动不影响指纹。
+ */
+export function roundTreesFingerprint(trees: TreeRecord[], plotId: string, round: number): string {
+  const text = trees
+    .filter((t) => t.plotId === plotId && t.round === round)
+    .map((t) => `${t.treeNo}=${t.species}:${t.dbhCm}:${t.heightM}:${t.status}`)
+    .sort()
+    .join(';');
+  let hash = 5381;
+  for (let i = 0; i < text.length; i += 1) {
+    hash = ((hash << 5) + hash + text.charCodeAt(i)) | 0;
+  }
+  return (hash >>> 0).toString(36);
+}

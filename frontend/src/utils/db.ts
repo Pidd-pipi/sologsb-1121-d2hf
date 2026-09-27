@@ -68,8 +68,18 @@ export function readDbVersion(): number {
   }
 }
 
+/** 保存比对结果：同一 (plotId, baseRound, targetRound) 组合整组替换，只保留最新一代 */
 export async function saveRecheckDiffs(diffs: RecheckDiff[]): Promise<void> {
-  await db.rechecks.bulkPut(diffs);
+  if (diffs.length === 0) return;
+  const { plotId, baseRound, targetRound } = diffs[0];
+  await db.transaction('rw', db.rechecks, async () => {
+    await db.rechecks
+      .where('plotId')
+      .equals(plotId)
+      .filter((row) => row.baseRound === baseRound && row.targetRound === targetRound)
+      .delete();
+    await db.rechecks.bulkPut(diffs);
+  });
 }
 
 export async function loadRecheckDiffs(plotId: string): Promise<RecheckDiff[]> {

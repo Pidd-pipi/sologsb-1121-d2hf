@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
-import { Alert, Button, Card, Col, Row, Select, Space, Statistic, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Row, Select, Space, Statistic, Tag, Tooltip, Typography } from 'antd';
 import { SaveOutlined } from '@ant-design/icons';
 import { usePlotStore } from '../stores/plotStore';
 import { useTreeStore } from '../stores/treeStore';
@@ -8,6 +8,7 @@ import GrowthDiffTable from '../components/common/GrowthDiffTable';
 import RoundTag from '../components/common/RoundTag';
 import { loadRecheckDiffs, saveRecheckDiffs } from '../utils/db';
 import { newId } from '../utils/id';
+import { roundTreesFingerprint } from '../utils/forestCalc';
 import { growthRate, isDiffAbnormal, type RecheckDiff } from '../types/recheck';
 import type { TreeRecord } from '../types/tree';
 
@@ -42,9 +43,9 @@ export default function RecheckView() {
   useEffect(() => {
     if (!id) return;
     void loadRecheckDiffs(id).then((rows) => {
-      if (rows.length > 0) setDiffs(rows);
+      setDiffs(rows.filter((r) => r.baseRound === baseRound && r.targetRound === targetRound));
     });
-  }, [id]);
+  }, [id, baseRound, targetRound]);
 
   useEffect(() => {
     if (!toast) return;
@@ -66,6 +67,9 @@ export default function RecheckView() {
     const allNos = Array.from(new Set([...baseMap.keys(), ...targetMap.keys()])).sort((a, b) =>
       a.localeCompare(b, 'zh-Hans-CN', { numeric: true }),
     );
+    // 记录生成时两期样木状态指纹，后续任一期样木变化都能检出结果失效
+    const baseFingerprint = roundTreesFingerprint(trees, id, baseRound);
+    const targetFingerprint = roundTreesFingerprint(trees, id, targetRound);
 
     const next: RecheckDiff[] = allNos.map((treeNo) => {
       const b = baseMap.get(treeNo);
@@ -93,6 +97,8 @@ export default function RecheckView() {
         heightGrowth,
         statusChange,
         missingReason,
+        baseFingerprint,
+        targetFingerprint,
         generatedAt: Date.now(),
       };
     });
@@ -102,9 +108,33 @@ export default function RecheckView() {
     setToast(`已生成第 ${baseRound} 期 → 第 ${targetRound} 期的逐株比对表，共 ${next.length} 条`);
   };
 
+  // 当前两期样木的实时指纹，与比对生成时记录的指纹比对即可检出失效
+  const currentBaseFp = useMemo(
+    () => roundTreesFingerprint(trees, id, baseRound),
+    [trees, id, baseRound],
+  );
+  const currentTargetFp = useMemo(
+    () => roundTreesFingerprint(trees, id, targetRound),
+    [trees, id, targetRound],
+  );
+
+  const stale = useMemo(() => {
+    if (diffs.length === 0) return { outdated: false, changedRounds: [] as number[] };
+    const changed = new Set<number>();
+    diffs.forEach((d) => {
+      if (d.baseFingerprint !== currentBaseFp) changed.add(d.baseRound);
+      if (d.targetFingerprint !== currentTargetFp) changed.add(d.targetRound);
+    });
+    return { outdated: changed.size > 0, changedRounds: Array.from(changed).sort((a, b) => a - b) };
+  }, [diffs, currentBaseFp, currentTargetFp]);
+
   const save = async () => {
     if (diffs.length === 0) {
       setError('请先生成比对表');
+      return;
+    }
+    if (stale.outdated) {
+      setError('相关期次样木记录已变更，请重新生成比对表后再保存');
       return;
     }
     await saveRecheckDiffs(diffs);
@@ -152,6 +182,14 @@ export default function RecheckView() {
 
       {toast ? <Alert type="success" showIcon message={toast} closable onClose={() => setToast('')} /> : null}
       {error ? <Alert type="error" showIcon message={error} closable onClose={() => setError('')} /> : null}
+      {stale.outdated ? (
+        <Alert
+          type="warning"
+          showIcon
+          message={`第 ${stale.changedRounds.join('、')} 期样木记录已变更，当前比对结果已失效，待重新生成`}
+          description="重新生成逐株比对表后即可恢复保存；无关期次的改动不会影响本比对。"
+        />
+      ) : null}
 
       <Card size="small">
         <Space wrap size={10}>
@@ -176,9 +214,11 @@ export default function RecheckView() {
           <Button type="primary" onClick={generate}>
             生成逐株比对表
           </Button>
-          <Button icon={<SaveOutlined />} onClick={save}>
-            保存比对结果
-          </Button>
+          <Tooltip title={stale.outdated ? '样木记录已变更，需重新生成后才能保存' : undefined}>
+            <Button icon={<SaveOutlined />} disabled={stale.outdated} onClick={save}>
+              保存比对结果
+            </Button>
+          </Tooltip>
           <Typography.Text type="secondary">
             可选期次：{rounds.length === 0 ? '暂无数据' : rounds.map((r) => `第 ${r} 期`).join('、')}
           </Typography.Text>
@@ -208,7 +248,15 @@ export default function RecheckView() {
         </Col>
       </Row>
 
-      <Card size="small" title="两期逐株差值表">
+      <Card
+        size="small"
+        title={
+          <Space size={8}>
+            两期逐株差值表
+            {stale.outdated ? <Tag color="warning">待重新生成</Tag> : null}
+          </Space>
+        }
+      >
         <GrowthDiffTable diffs={diffs} />
       </Card>
     </Space>

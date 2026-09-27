@@ -24,6 +24,10 @@ export interface RecheckDiff {
   statusChange: string;
   /** 无法匹配时的缺失原因 */
   missingReason: string;
+  /** 生成时上期样木状态指纹（见 roundTreesFingerprint）；缺失视为已失效 */
+  baseFingerprint?: string;
+  /** 生成时本期样木状态指纹 */
+  targetFingerprint?: string;
   generatedAt: number;
 }
 
